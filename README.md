@@ -43,7 +43,8 @@ Run inside your Cocos project directory to auto-detect the project root (omit `-
 
 1. Fully quit and restart Creator; open the target project  
 2. **Extension → Extension Manager → Project** → enable **cocos-meta-mcp**  
-3. Console should show: `MCP HTTP bridge http://127.0.0.1:3921`
+3. Console should show: `MCP HTTP bridge http://127.0.0.1:3921`  
+   (Host/Origin guard enabled; extra Origins via `COCOSMCP_ALLOWED_ORIGINS`)
 
 ### Cursor
 

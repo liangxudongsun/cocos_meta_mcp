@@ -22,6 +22,55 @@ const SPINE_IDS = [
 
 const RASTER_BASENAMES = ["candystorm_bg", "candystorm_kuang", "candystorm_iconbg", "candystorm_fgbg"] as const;
 
+/** 本地 HTTP 桥：Host 必须 loopback；有 Origin 时仅放行扩展 / loopback / 环境白名单 */
+function isLoopbackHost(hostHeader: string | undefined): boolean {
+    if (!hostHeader) return false;
+    const host = hostHeader.split(",")[0]!.trim().toLowerCase();
+    let hostname: string;
+    if (host.startsWith("[")) {
+        const end = host.indexOf("]");
+        hostname = end > 0 ? host.slice(1, end) : host;
+    } else {
+        hostname = host.split(":")[0] || host;
+    }
+    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+}
+
+function isAllowedBridgeOrigin(origin: string | undefined): boolean {
+    if (origin == null || origin === "") return true;
+    if (origin === "null") return false;
+    let url: URL;
+    try {
+        url = new URL(origin);
+    } catch {
+        return false;
+    }
+    if (url.protocol === "chrome-extension:" || url.protocol === "moz-extension:") {
+        return true;
+    }
+    if (url.protocol === "http:" || url.protocol === "https:") {
+        const h = url.hostname.toLowerCase();
+        if (h === "127.0.0.1" || h === "localhost" || h === "::1") return true;
+    }
+    const extra = (process.env.COCOSMCP_ALLOWED_ORIGINS || "")
+        .split(/[,;\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    return extra.includes(origin);
+}
+
+function assertLocalBridgeRequest(req: http.IncomingMessage): { ok: true } | { ok: false; error: string } {
+    if (!isLoopbackHost(req.headers.host)) {
+        return { ok: false, error: `拒绝非 loopback Host: ${req.headers.host || "(empty)"}` };
+    }
+    const originRaw = req.headers.origin;
+    const origin = Array.isArray(originRaw) ? originRaw[0] : originRaw;
+    if (!isAllowedBridgeOrigin(origin)) {
+        return { ok: false, error: `拒绝 Origin: ${origin || "(empty)"}` };
+    }
+    return { ok: true };
+}
+
 function collectReimportUrls(): string[] {
     const base = CANDYSTORM_DB_URL;
     const urls: string[] = [];
@@ -202,7 +251,8 @@ async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, u
 }
 
 /**
- * 通过已安装的 genbot 扩展生成 bind / gen.ts（需工程启用 genbot 扩展）。
+ * 通过已安装的 ViewWeaver / genbot 扩展生成 bind / gen.ts。
+ * AI / MCP 必须走 generate-for-ai（无 Editor.Dialog）；禁止 generate-from-asset。
  */
 async function genbotGenerateFromDbUrl(
     dbUrl: string,
@@ -226,22 +276,49 @@ async function genbotGenerateFromDbUrl(
         return { ok: false, error: `not a prefab: ${dbUrl}` };
     }
 
-    try {
-        await Editor.Message.request("genbot", "generate-from-asset", uuid);
-    } catch (e) {
-        const msg = String(e);
-        if (msg.includes("genbot") || msg.includes("Extension")) {
-            return {
-                ok: false,
-                error:
-                    "genbot extension not available. Run: git submodule update --init extensions/genbot, enable genbot in Creator, or use MCP CLI without preferEditor.",
-                detail: msg,
-            };
+    type GenAiResult = {
+        ok?: boolean;
+        error?: { phase?: string; message?: string };
+    };
+
+    const providers = ["viewweaver", "genbot"] as const;
+    let lastErr = "";
+    for (const provider of providers) {
+        try {
+            const gen = (await Editor.Message.request(
+                provider,
+                "generate-for-ai",
+                uuid,
+            )) as GenAiResult | null;
+            if (gen && gen.ok === false) {
+                return {
+                    ok: false,
+                    error: gen.error?.message || "generate-for-ai failed",
+                    detail: JSON.stringify(gen),
+                };
+            }
+            return { ok: true, prefab: info.file, detail: `${provider}:generate-for-ai` };
+        } catch (e) {
+            lastErr = String(e);
+            // Extension missing → try next provider
+            if (
+                lastErr.includes("Extension") ||
+                lastErr.includes(provider) ||
+                lastErr.includes("not found") ||
+                lastErr.includes("ENOENT")
+            ) {
+                continue;
+            }
+            return { ok: false, error: lastErr };
         }
-        return { ok: false, error: msg };
     }
 
-    return { ok: true, prefab: info.file, detail: "generate-from-asset" };
+    return {
+        ok: false,
+        error:
+            "viewweaver/genbot extension not available. Enable extensions/viewweaver (or genbot) in Creator, or use MCP CLI without preferEditor.",
+        detail: lastErr,
+    };
 }
 
 type ExecMessageBody = {
@@ -420,6 +497,12 @@ async function startHttpBridge() {
             res.writeHead(code, { "Content-Type": "application/json" });
             res.end(JSON.stringify(body));
         };
+
+        const gate = assertLocalBridgeRequest(req);
+        if (!gate.ok) {
+            send(403, { ok: false, error: gate.error });
+            return;
+        }
 
         if (req.method === "GET" && req.url === "/health") {
             send(200, {

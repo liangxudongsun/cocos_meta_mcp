@@ -43,7 +43,8 @@ npm run setup -- --project-root D:/path/to/your-cocos-project
 
 1. 完全退出并重启 Creator，打开对应工程  
 2. **扩展 → 扩展管理器 → 项目** → 启用 **cocos-meta-mcp**  
-3. 控制台：`MCP HTTP bridge http://127.0.0.1:3921`
+3. 控制台：`MCP HTTP bridge http://127.0.0.1:3921`  
+   （桥校验 Host/Origin；额外 Origin 可用环境变量 `COCOSMCP_ALLOWED_ORIGINS`）
 
 ### Cursor
 
